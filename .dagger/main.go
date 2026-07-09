@@ -2,9 +2,9 @@ package main
 
 import (
 	"context"
-	"dagger/daggerkit/internal/dagger"
-	"os"
 	"time"
+
+	"dagger/daggerkit/internal/dagger"
 )
 
 type Daggerkit struct{}
@@ -28,14 +28,20 @@ func (m *Daggerkit) RemoteRevInfoVersion(
 func (m *Daggerkit) DebugMise(
 	ctx context.Context,
 	// +defaultPath="/"
-	src *dagger.Directory,
+	source *dagger.Directory,
+	// +optional
+	debianSourceBaseUrl string,
+	// +optional
+	miseGithubToken *dagger.Secret,
 ) (*dagger.Container, error) {
 	c := dag.
 		DebianContainer(dagger.DebianContainerOpts{
-			IncludeMise:     true,
-			MiseGithubToken: dag.SetSecret("MISE_GITHUB_TOKEN", os.Getenv("MISE_GITHUB_TOKEN")),
+			SourceBaseURL: debianSourceBaseUrl,
 		}).
-		WithMoutedSource(src).
+		WithMise(dagger.DebianContainerWithMiseOpts{
+			MiseGithubToken: miseGithubToken,
+		}).
+		WithMoutedSource(source).
 		Container()
 
 	return c.

@@ -12,7 +12,19 @@ remote-rev-info:
     dagger call remote-rev-info-version
 
 debug-mise:
-    dagger --progress=plain -vv call debug-mise stdout
+    dagger --progress=plain call debug-mise \
+        --mise-github-token=env://MISE_GITHUB_TOKEN \
+        --debian-source-base-url={{ env("DEBIAN_SOURCE_BASE_URL", "") }} \
+        stdout
+
+publish:
+    dagger --progress=plain call \
+        container \
+            --debian-source-base-url={{ env("DEBIAN_SOURCE_BASE_URL", "") }} \
+                push \
+                    --registry="ghcr.io" \
+                    --username=${GH_USERNAME} \
+                    --password=env://GH_PASSWORD
 
 clean:
     dagger core engine local-cache prune

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path"
 	"slices"
+	"strings"
 
 	"dagger/debian/internal/dagger"
 )
@@ -15,22 +16,29 @@ func New(
 	// +optional
 	container *dagger.Container,
 	// +optional
-	includeMise bool,
+	platform dagger.Platform,
 	// +optional
-	miseVersion string,
+	version string,
+	// apt source base url
 	// +optional
-	miseGithubToken *dagger.Secret,
+	sourceBaseURL string,
 ) (*DebianContainer, error) {
 	if container == nil {
-		container = dag.Container().From("debian:13")
+		ds := &DebianSource{
+			Version: namedVersion(cmp.Or(version, "13")),
+			BaseURL: cmp.Or(sourceBaseURL, "http://deb.debian.org"),
+		}
+
+		container = dag.Container(dagger.ContainerOpts{Platform: platform}).
+			From(fmt.Sprintf("debian:%s", ds.Version)).
+			WithFile(
+				"/etc/apt/sources.list.d/debian.sources",
+				dag.File("debian.sources", ds.String()),
+			)
 	}
 
 	dc := &DebianContainer{
 		Container: container,
-	}
-
-	if includeMise {
-		return dc.withMise(ctx, miseVersion, miseGithubToken)
 	}
 
 	return dc, nil
@@ -40,20 +48,25 @@ type DebianContainer struct {
 	*dagger.Container
 }
 
-func (t *DebianContainer) WithPackageInstalled(packages []string) *DebianContainer {
+func (t *DebianContainer) WithPackageInstalled(ctx context.Context, packages []string) (*DebianContainer, error) {
 	if len(packages) == 0 {
-		return t
+		return t, nil
 	}
 
-	ctr := t.Container.
+	ctr, err := t.Container.
 		WithExec([]string{"apt-get", "update"}).
 		WithExec(slices.Concat(
 			[]string{"apt-get", "-y", "--no-install-recommends", "install"},
 			packages,
 		)).
-		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"})
+		WithExec([]string{"rm", "-rf", "/var/lib/apt/lists/*"}).
+		Sync(ctx)
 
-	return &DebianContainer{Container: ctr}
+	if err != nil {
+		return nil, err
+	}
+
+	return &DebianContainer{Container: ctr}, nil
 }
 
 const (
@@ -61,47 +74,65 @@ const (
 	MISE_DATA_DIR     = "/var/mise"
 )
 
-func (t *DebianContainer) withMise(
+func (t *DebianContainer) WithMise(
 	ctx context.Context,
-	// +optional
 	// mise 版本号，留空则安装最新版
+	// +optional
 	version string,
 	// +optional
 	miseGithubToken *dagger.Secret,
+	// 不共享
+	// +optional
+	noShared bool,
 ) (*DebianContainer, error) {
-	c := t.WithPackageInstalled([]string{
-		"curl",
+	dc, err := t.WithPackageInstalled(ctx, []string{
 		"git",
 		"ca-certificates",
 		"build-essential",
 	})
+	if err != nil {
+		return nil, err
+	}
 
-	ctr := c.Container.
+	platform, err := dc.Container.Platform(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ctr := dc.Container.
 		WithEnvVariable("MISE_DATA_DIR", MISE_DATA_DIR).
 		WithEnvVariable("MISE_CONFIG_DIR", MISE_DATA_DIR).
 		WithEnvVariable("MISE_CACHE_DIR", path.Join(MISE_DATA_DIR, "cache")).
 		WithEnvVariable("MISE_INSTALL_PATH", MISE_INSTALL_PATH).
-		WithEnvVariable("PATH", path.Join(MISE_DATA_DIR, "shims")+":$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true}).
-		WithMountedCache(MISE_DATA_DIR, dag.CacheVolume("mise"))
+		WithEnvVariable("PATH", path.Join(MISE_DATA_DIR, "shims")+":$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true})
+
+	if !noShared {
+		ctr = ctr.WithMountedCache(MISE_DATA_DIR, dag.CacheVolume("mise"))
+	}
 
 	if miseGithubToken != nil {
 		ctr = ctr.WithSecretVariable("MISE_GITHUB_TOKEN", miseGithubToken)
 	}
 
-	mise := dag.Container().From(fmt.Sprintf("ghcr.io/jdx/mise:%s", cmp.Or(version, "latest")))
+	miseCtr := dag.Container(dagger.ContainerOpts{Platform: platform}).
+		From(fmt.Sprintf("ghcr.io/jdx/mise:%s", cmp.Or(version, "latest")))
 
-	ctr = ctr.WithFile(
-		MISE_INSTALL_PATH,
-		// https://github.com/jdx/mise/blob/main/packaging/mise/Dockerfile
-		mise.File("/usr/local/bin/mise"),
-	)
+	ctr, err = ctr.
+		WithFile(
+			MISE_INSTALL_PATH,
+			miseCtr.File("/usr/local/bin/mise"), // https://github.com/jdx/mise/blob/main/packaging/mise/Dockerfile
+		).
+		Sync(ctx)
+	if err != nil {
+		return nil, err
+	}
 
 	return &DebianContainer{Container: ctr}, nil
 }
 
 func (t *DebianContainer) WithMoutedSource(
 	ctx context.Context,
-	src *dagger.Directory,
+	source *dagger.Directory,
 	// +optional
 	workingDir string,
 ) (*DebianContainer, error) {
@@ -110,7 +141,7 @@ func (t *DebianContainer) WithMoutedSource(
 	}
 
 	ctr := t.Container.
-		WithMountedDirectory(workingDir, src).
+		WithMountedDirectory(workingDir, source).
 		WithWorkdir(workingDir)
 
 	ok, err := ctr.Exists(ctx, MISE_INSTALL_PATH)
@@ -130,4 +161,42 @@ func (t *DebianContainer) WithMoutedSource(
 	}
 
 	return &DebianContainer{Container: installed}, nil
+}
+
+var debianVersions = map[string]string{
+	"12": "bookworm",
+	"13": "trixie",
+}
+
+func namedVersion(version string) string {
+	if v, ok := debianVersions[version]; ok {
+		return v
+	}
+	return version
+}
+
+type DebianSource struct {
+	BaseURL string
+	Version string
+}
+
+// https://github.com/debuerreotype/docker-debian-artifacts/blob/3355451ec423321fe5ba232dc55c00f3216f6d87/trixie/rootfs.debian-sources
+func (s DebianSource) String() string {
+	var b strings.Builder
+
+	b.WriteString("Types: deb\n")
+	b.WriteString(fmt.Sprintf("URIs: %s/debian\n", s.BaseURL))
+	b.WriteString(fmt.Sprintf("Suites: %s %s-updates\n", s.Version, s.Version))
+	b.WriteString("Components: main\n")
+	b.WriteString("Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp\n")
+
+	b.WriteString("\n")
+
+	b.WriteString("Types: deb\n")
+	b.WriteString(fmt.Sprintf("URIs: %s/debian-security\n", s.BaseURL))
+	b.WriteString(fmt.Sprintf("Suites: %s-security\n", s.Version))
+	b.WriteString("Components: main\n")
+	b.WriteString("Signed-By: /usr/share/keyrings/debian-archive-keyring.pgp\n")
+
+	return b.String()
 }
