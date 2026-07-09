@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"dagger/daggerkit/internal/dagger"
+	"os"
+	"time"
 )
 
 type Daggerkit struct{}
@@ -30,10 +32,13 @@ func (m *Daggerkit) DebugMise(
 ) (*dagger.Container, error) {
 	c := dag.
 		DebianContainer(dagger.DebianContainerOpts{
-			IncludeMise: true,
+			IncludeMise:     true,
+			MiseGithubToken: dag.SetSecret("MISE_GITHUB_TOKEN", os.Getenv("MISE_GITHUB_TOKEN")),
 		}).
 		WithMoutedSource(src).
 		Container()
 
-	return c.WithExec([]string{"go", "version"}), nil
+	return c.
+		WithEnvVariable("_RUN_AT", time.Now().String()).
+		WithExec([]string{"go", "version"}), nil
 }
