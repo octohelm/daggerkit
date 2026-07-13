@@ -69,9 +69,20 @@ func (t *DebianContainer) WithPackageInstalled(ctx context.Context, packages []s
 	return &DebianContainer{Container: ctr}, nil
 }
 
-const (
+// https://specifications.freedesktop.org/basedir/latest/#variables
+var (
+	XDG_DATA_HOME   = "/root/.local/share"
+	XDG_CONFIG_HOME = "/root/.config"
+	XDG_STATE_HOME  = "/root/.local/state"
+	XDG_CACHE_HOME  = "/root/.cache"
+)
+
+var (
 	MISE_INSTALL_PATH = "/usr/local/bin/mise"
-	MISE_DATA_DIR     = "/var/mise"
+
+	MISE_CONFIG_DIR = path.Join(XDG_CONFIG_HOME, "mise")
+	MISE_DATA_DIR   = path.Join(XDG_DATA_HOME, "mise")
+	MISE_CACHE_DIR  = path.Join(XDG_CACHE_HOME, "mise")
 )
 
 func (t *DebianContainer) WithMise(
@@ -100,9 +111,9 @@ func (t *DebianContainer) WithMise(
 	}
 
 	ctr := dc.Container.
+		WithEnvVariable("MISE_CONFIG_DIR", MISE_CONFIG_DIR).
 		WithEnvVariable("MISE_DATA_DIR", MISE_DATA_DIR).
-		WithEnvVariable("MISE_CONFIG_DIR", MISE_DATA_DIR).
-		WithEnvVariable("MISE_CACHE_DIR", path.Join(MISE_DATA_DIR, "cache")).
+		WithEnvVariable("MISE_CACHE_DIR", MISE_CACHE_DIR).
 		WithEnvVariable("MISE_INSTALL_PATH", MISE_INSTALL_PATH).
 		WithEnvVariable("PATH", path.Join(MISE_DATA_DIR, "shims")+":$PATH", dagger.ContainerWithEnvVariableOpts{Expand: true})
 

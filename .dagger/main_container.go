@@ -51,11 +51,7 @@ func (c *DaggerkitContainer) Build(
 		}).
 		Container()
 
-	return ctr.
-		WithExec([]string{
-			"mise", "use", "--global", "dagger", "just",
-		}).
-		Sync(ctx)
+	return ctr.Sync(ctx)
 }
 
 func (c *DaggerkitContainer) Push(
